@@ -32,7 +32,7 @@ rsecurity-assignment/
    pip install -r requirements.txt
    ```
 2. Place the **GeoLite2-Country.mmdb** file in the `geoip/` directory.  
-   (Instructions to download are in line 47-63).
+   (Download instructions below).
 3. Run the main script:
    ```bash
    python src/analyze.py
@@ -138,4 +138,5 @@ The system detects multiple types of anomalies, each covering a different **atta
 ```
 
   
+
 
