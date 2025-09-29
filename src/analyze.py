@@ -560,7 +560,7 @@ def plot_advanced_analytics(anomalies):
     plt.savefig(OUT.parent / "anomaly_analysis.png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"📈 Threat analysis complete: {total} threats detected")
+    print(f" Threat analysis complete: {total} threats detected")
 
 
 def main():
@@ -573,13 +573,13 @@ def main():
     try:
         # Load log data
         df = load_logs()
-        print(f"📊 Loaded {len(df)} log entries from {DATA}")
+        print(f" Loaded {len(df)} log entries from {DATA}")
 
         # Initialize anomaly collection
         all_anomalies = []
 
         # Execute rule-based detectors
-        print("🔍 Running rule-based detectors...")
+        print(" Running rule-based detectors...")
         all_anomalies.extend(detect_bruteforce(df))
         all_anomalies.extend(detect_suspicious_ips(df))
         all_anomalies.extend(detect_geo_hops(df, GEOIP_DB))
@@ -587,7 +587,7 @@ def main():
 
         # Execute ML-based detector (if enabled)
         if ML_ENABLE:
-            print("🤖 Running ML behavioral analysis...")
+            print(" Running ML behavioral analysis...")
             try:
                 ml_anomalies = detect_ml_lof(df, contamination=ML_CONTAMINATION, window_min=ML_WINDOW_MIN)
                 all_anomalies.extend(ml_anomalies)
@@ -604,11 +604,11 @@ def main():
 
         # Generate analytics (if anomalies found)
         if all_anomalies:
-            print("📊 Generating analytics visualization...")
+            print(" Generating analytics visualization...")
             plot_advanced_analytics(all_anomalies)
-            print(f"📈 Visualization saved to: {OUT.parent / 'anomaly_analysis.png'}")
+            print(f"📊 Visualization saved to: {OUT.parent / 'anomaly_analysis.png'}")
         else:
-            print("ℹ️  No anomalies detected - skipping visualization")
+            print(" No anomalies detected - skipping visualization")
 
     except Exception as e:
         print(f"❌ Error in main execution: {str(e)}")

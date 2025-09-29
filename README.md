@@ -6,10 +6,10 @@
 
 ## Assignment Overview
 
-This project analyzes raw activity logs (CSV format) and detects suspicious behaviors that may indicate security incidents. The system implements **5 detection algorithms** covering different attack vectors as specified in the assignment requirements.
+This project analyzes raw activity logs (CSV format) and detects suspicious behaviors that may indicate security incidents. The system implements **5 detection algorithms** covering different attack.
 
 **Input:** `timestamp, user_id, action, ip_address`  
-**Output:** JSON report with detected anomalies + professional visualization
+**Output:** JSON report with detected anomalies + visualization
 
 ---
 
@@ -56,17 +56,27 @@ pip install -r requirements.txt
 ```bash
 python src/analyze.py
 
-# Expected output:
-# Total anomalies detected: X
-# Results saved to: outputs/anomalies.json
-# Visualization saved to: outputs/anomaly_analysis.png
 ```
+
+---
+
+## Detection Approach
+
+I parse authentication logs into a pandas DataFrame and run five detectors:
+
+* **Brute-Force:** flags ≥5 `login_failed` for the same *(IP, user)* within a 10-minute sliding window.
+* **Password Spraying:** flags failures from the same IP against ≥3 different users within 15 minutes.
+* **Geo-hop (Impossible Travel):** flags the same user logging in from two different countries (GeoLite2) within ≤5 minutes.
+* **Suspicious IP (First-Seen + Recent Fails):** flags a `login_success` from an IP that is *new to the user* (not seen for 60 days) **and** was preceded by failures from that IP within 60 minutes.
+* **ML (Local Outlier Factor):** unsupervised anomaly detection over 10 behavioral features (time, pace, IP diversity, success/fail ratios, etc.) to catch novel patterns.
+
+Each alert is exported to JSON with metadata (`type`, `user_id`, `ip_address`, `timestamp`, `reason`, `mitigation`) and suggested actions (e.g., block IP, alert admin, review). A matplotlib chart shows anomaly counts by hour to visualize threat activity patterns. The combination of **explainable rules** (high precision) and **unsupervised ML** (better coverage for unknowns) provides balanced detection.
 
 ---
 
 ## Detection Methods
 
-The system implements **5 detection algorithms** covering different attack vectors commonly seen in real-world scenarios:
+The system implements **5 detection algorithms** covering different attack scenarios:
 
 ### 1. Brute-Force Detection
 **What it detects:** Multiple failed login attempts from same IP targeting same user
@@ -79,8 +89,6 @@ Classic credential stuffing attack where attacker systematically tries passwords
 - Uses sliding window algorithm to detect 5 or more failures within 10 minutes  
 - Efficient implementation with two-pointer technique
 
-**Real-world scenario:** Attacker targets "admin" account and tries common passwords like "password123", "admin", "123456" repeatedly from IP 203.0.113.200.
-
 ```python
 # Configuration in analyze.py
 BRUTEFORCE_THRESHOLD = 5    # Failed attempts to trigger alert
@@ -91,7 +99,7 @@ BRUTEFORCE_WINDOW_MIN = 10  # Time window (minutes)
 **What it detects:** Account takeover from new external IPs with suspicious activity patterns
 
 **Why this sophisticated approach:**  
-Simple "new IP" detection creates massive false positives (remote work, mobile networks, VPNs). Instead, we use **dual-condition logic** that only flags IPs that are BOTH:
+Simple "new IP" detection creates massive false positives (remote work, mobile networks, VPNs). Instead, we use **dual-condition logic** that only flags IPs that are both:
 1. **First-time use** by this user (greater than 60 day gap)  
 2. **Recently failed** attempts from same IP (within 60 minutes)
 
@@ -101,23 +109,19 @@ Simple "new IP" detection creates massive false positives (remote work, mobile n
 - Correlates successful logins with recent failed attempts from same IP
 - **Daily deduplication** prevents alert spam for same (user,IP) pair
 
-**Real-world scenario:** Attacker compromises "alice" account, logs in from new IP 151.101.1.69. That IP had failed login attempts 20 minutes earlier (reconnaissance phase), then succeeded (compromise phase).
-
 **Why it works:** Legitimate remote access rarely involves failed attempts followed by success from same new IP within short timeframe.
 
 ### 3. Geographic Impossible Travel (Geo-hops)
 **What it detects:** Same user appearing in different countries within physically impossible timeframe
 
 **Why this approach:**  
-Human users cannot travel between countries in minutes. When we see this pattern, it almost always indicates account compromise where attacker and legitimate user are active simultaneously.
+Human users cannot travel between countries in minutes. 
 
 **Detection logic:**  
 - Resolves IP addresses to countries using MaxMind GeoLite2 database
 - Groups events by `user_id`, sorts chronologically  
 - Flags country changes within 5 minutes (physically impossible)
 - Handles edge cases: unknown countries, same-country travel
-
-**Real-world scenario:** User "user16" logs in from Germany at 09:00, then appears logging in from South Korea at 09:04. Even fastest flights take 10+ hours between these locations.
 
 **Technical note:** Uses `geoip2` library with local MMDB database for fast, privacy-preserving lookups.
 
@@ -131,8 +135,6 @@ Modern attackers avoid brute-force (triggers account lockouts) and instead use "
 - Groups events by `ip_address` (attacker perspective)
 - Within 15-minute windows, looks for 4 or more failures across 3 or more different users
 - Reports exact list of targeted usernames for investigation
-
-**Real-world scenario:** Attacker from IP 5.5.5.5 tries "Password123" against users: user10, user19, user2, user20 within 10 minutes. Each user only sees 1 failed attempt (below lockout threshold), but collectively it's clear attack pattern.
 
 **Why parameters:** 3+ users shows targeting breadth, 4+ attempts shows persistence, 15-minute window captures typical spray campaigns.
 
@@ -177,16 +179,6 @@ features = [
 - Applies LOF algorithm to identify outliers (contamination=1%)
 - Provides human-readable explanations for each anomaly
 
-**Real-world scenarios ML catches:**  
-- User suddenly downloads multiple files at unusual hours
-- Account shows rapid-fire activity from multiple IPs (possible bot behavior)  
-- User performs actions they've never done before during off-hours
-
-**Explainable AI example:**  
-```
-"LOF flagged (fails_win=0, unique_ips_win=1, is_private=0, hour=14)"
-Translation: Unusual pattern detected based on failure counts, IP usage, network type, and time
-```
 
 **Configuration:**
 ```python
@@ -246,7 +238,7 @@ ML_WINDOW_MIN = 30          # Feature analysis window (minutes)
 ]
 ```
 
-### Professional Visualization
+### Visualization
 **File:** `outputs/anomaly_analysis.png`  
 **Content:** Hourly threat activity chart with:
 - Temporal threat patterns throughout the day
@@ -288,14 +280,7 @@ pip install -r requirements.txt
 
 ---
 
-### Bonus Features Implemented:
-**Visualizations:** Professional hourly threat activity chart  
-**Suggested mitigations:** Block IP, alert admin, review recommendations  
-**ML-based methods:** Local Outlier Factor with explainable AI
-
----
-
-## Technical Highlights
+## Technical 
 
 - **Efficient algorithms:** sliding window for brute-force detection
 - **Smart filtering:** Reduces false positives with dual-condition logic
