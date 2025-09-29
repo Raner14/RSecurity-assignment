@@ -5,3 +5,6 @@ __pycache__/
 outputs/*.json
 geoip/*.mmdb
 .idea/
+outputs/*.png
+*.tmp
+Thumbs.db

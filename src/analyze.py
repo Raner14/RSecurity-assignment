@@ -6,7 +6,7 @@ import pandas as pd
 import geoip2.database
 import numpy as np
 from sklearn.neighbors import LocalOutlierFactor
-
+import matplotlib.pyplot as plt
 
 # ============================================================
 #                       Config Parameters
@@ -98,7 +98,8 @@ def detect_bruteforce(df: pd.DataFrame) -> list[dict]:
                     "timestamp": start_time.strftime("%Y-%m-%d %H:%M:%S"),
                     "user_id": user,
                     "ip_address": ip,
-                    "reason": f"Possible brute-force: {window_size} failed logins in {BRUTEFORCE_WINDOW_MIN} minutes"
+                    "reason": f"Possible brute-force: {window_size} failed logins in {BRUTEFORCE_WINDOW_MIN} minutes",
+                    "mitigation": "block_ip"
                 })
                 break  # report this (ip,user) once and move to next group
 
@@ -175,6 +176,7 @@ def detect_suspicious_ips(df: pd.DataFrame) -> list[dict]:
                 f"First-seen public IP for user (>{SUSPICIOUS_FIRST_SEEN_DAYS}d gap) "
                 f"& recent failures from same IP (≤{SUSPICIOUS_FAIL_LOOKBACK_MIN}m)"
             ),
+            "mitigation": "alert_admin"
         })
 
     return anomalies
@@ -224,7 +226,8 @@ def detect_geo_hops(df, geoip_db_path: str | Path = GEOIP_DB):
                         "timestamp": curr["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
                         "user_id": user,
                         "ip_address": curr["ip_address"],
-                        "reason": f"Geo-hop detected: {prev['country']} → {curr['country']} within {time_diff}"
+                        "reason": f"Geo-hop detected: {prev['country']} → {curr['country']} within {time_diff}",
+                        "mitigation": "alert_admin"
                     })
     finally:
         reader.close()
@@ -275,148 +278,341 @@ def detect_password_spraying(df,
                     "user_id": users_in_window,
                     "ip_address": ip,
                     "reason": (f"Password spraying: {total_fails} failed logins on {unique_users} users "
-                               f"({','.join(users_in_window)}) within {window_min} minutes")
+                               f"({','.join(users_in_window)}) within {window_min} minutes"),
+                    "mitigation": "block_ip"
                 })
                 break
     return anomalies
 
+
 def _is_private_ip(ip: str) -> int:
-    """1 אם IP פרטי, אחרת 0 (עם טיפול בשגיאות)."""
+    """
+    Check if IP address is private
+
+    Args:
+        ip (str): IP address to classify
+
+    Returns:
+        int: 1 if private IP, 0 if public/invalid
+    """
     try:
         return int(ipaddress.ip_address(ip).is_private)
     except Exception:
-        return 0
+        return 0  # Treat invalid IPs as public (conservative)
+
 
 def _build_simple_features(df: pd.DataFrame, window_min: int = ML_WINDOW_MIN) -> pd.DataFrame:
     """
-    בונה פיצ'רים *פשוטים וברורים* לכל אירוע:
-    - דגלי פעולה (success/fail/download/change)
-    - שעה ביממה
-    - האם ה-IP פרטי
-    - ספירת כשלונות/הצלחות למשתמש בחלון זמן
-    - מספר IP-ים ייחודיים למשתמש בחלון זמן
-    - דקות מאז האירוע הקודם של אותו משתמש
+    Build behavioral features for ML anomaly detection.
+
+    Creates 10 features per event: action flags, temporal patterns,
+    network info, and user context within sliding time windows.
+
+    Args:
+        df (pd.DataFrame): Log data with timestamp, user_id, action, ip_address
+        window_min (int): Time window for rolling calculations (default: 30)
+
+    Returns:
+        pd.DataFrame: Enhanced data with feature columns and _ml_vector
+
+    Raises:
+        ValueError: If required columns missing or invalid parameters
     """
+    # Input validation
+    if df.empty:
+        return df.copy()
+
+    required_cols = ['timestamp', 'user_id', 'action', 'ip_address']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    if window_min <= 0:
+        raise ValueError(f"window_min must be positive, got {window_min}")
+
+    # Prepare data
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
 
-    # דגלי פעולה בסיסיים
-    df["is_success"]  = (df["action"] == "login_success").astype(int)
-    df["is_fail"]     = (df["action"] == "login_failed").astype(int)
+    # Basic action type features
+    df["is_success"] = (df["action"] == "login_success").astype(int)
+    df["is_fail"] = (df["action"] == "login_failed").astype(int)
     df["is_download"] = (df["action"] == "download_file").astype(int)
-    df["is_change"]   = (df["action"] == "change_settings").astype(int)
-    df["hour"]        = df["timestamp"].dt.hour
-    df["is_private"]  = df["ip_address"].apply(_is_private_ip)
+    df["is_change"] = (df["action"] == "change_settings").astype(int)
+    df["hour"] = df["timestamp"].dt.hour
+    df["is_private"] = df["ip_address"].apply(_is_private_ip)
 
     parts = []
     w = window_min
 
-    # נחשב פיצ'רים “בהקשר משתמש”
-    for _, g in df.groupby("user_id", group_keys=False):
-        g = g.sort_values("timestamp").reset_index(drop=True).copy()
+    # Calculate per-user contextual features
+    for user_id, g in df.groupby("user_id", group_keys=False):
+        try:
+            g = g.sort_values("timestamp").reset_index(drop=True).copy()
 
-        # סכומי rolling לפי זמן (pandas יודע לחשב לפי טיימסטמפ)
-        g["fail_count_win"]    = g[["timestamp","is_fail"]].rolling(f"{w}min", on="timestamp").sum().fillna(0)["is_fail"]
-        g["success_count_win"] = g[["timestamp","is_success"]].rolling(f"{w}min", on="timestamp").sum().fillna(0)["is_success"]
+            # Rolling window aggregations using pandas time-aware rolling
+            g["fail_count_win"] = g[["timestamp", "is_fail"]].rolling(f"{w}min", on="timestamp").sum().fillna(0)[
+                "is_fail"]
+            g["success_count_win"] = g[["timestamp", "is_success"]].rolling(f"{w}min", on="timestamp").sum().fillna(0)[
+                "is_success"]
 
-        # unique IPs בחלון זמן — two-pointers (מדויק למחרוזות)
-        uniq = []
-        left = 0
-        from datetime import timedelta as _td
-        for right in range(len(g)):
-            tr = g.loc[right, "timestamp"]
-            while tr - g.loc[left, "timestamp"] > _td(minutes=w):
-                left += 1
-            uniq.append(g.loc[left:right, "ip_address"].nunique())
-        g["unique_ips_win"] = uniq
+            # Unique IP count using two-pointer sliding window (more accurate for strings)
+            uniq = []
+            left = 0
+            for right in range(len(g)):
+                current_time = g.loc[right, "timestamp"]
+                # Shrink window from left to maintain time constraint
+                while current_time - g.loc[left, "timestamp"] > timedelta(minutes=w):
+                    left += 1
+                # Count unique IPs in current window [left:right]
+                uniq.append(g.loc[left:right, "ip_address"].nunique())
+            g["unique_ips_win"] = uniq
 
-        # דקות מאז האירוע הקודם של אותו משתמש
-        g["delta_min_from_prev"] = g["timestamp"].diff().dt.total_seconds().div(60).fillna(9999)
+            # Time since previous activity for same user
+            g["delta_min_from_prev"] = (
+                g["timestamp"]
+                .diff()
+                .dt.total_seconds()
+                .div(60)
+                .fillna(9999)  # Large value for first activity
+            )
 
-        parts.append(g)
+            parts.append(g)
 
-    feat = pd.concat(parts, ignore_index=True)
+        except Exception as e:
+            print(f"Warning: Failed to process user {user_id}: {str(e)}")
+            continue
 
-    # עמודות הפיצ'רים שנזין למודל
+    # Combine all user features
+    feat = pd.concat(parts, ignore_index=True) if parts else df.copy()
+
+    # Create feature matrix for ML
     feature_cols = [
-        "is_private","is_success","is_fail","is_download","is_change","hour",
-        "fail_count_win","success_count_win","unique_ips_win","delta_min_from_prev"
+        "is_private", "is_success", "is_fail", "is_download", "is_change", "hour",
+        "fail_count_win", "success_count_win", "unique_ips_win", "delta_min_from_prev"
     ]
+
+    # Validate feature columns exist
+    missing_features = [col for col in feature_cols if col not in feat.columns]
+    if missing_features:
+        raise RuntimeError(f"Missing feature columns: {missing_features}")
+
+    # Build feature matrix with proper error handling
     X = feat[feature_cols].astype(float).replace([np.inf, -np.inf], 0).fillna(0).values
-    feat["_ml_vector"] = list(X)   # נשמור את הווקטור לכל שורה
+    feat["_ml_vector"] = list(X)
+
     return feat
+
 
 def detect_ml_lof(df: pd.DataFrame,
                   contamination: float = ML_CONTAMINATION,
                   window_min: int = ML_WINDOW_MIN) -> list[dict]:
     """
-    ML פשוט: Local Outlier Factor (LOF).
-    הרעיון: אירוע שמצפיפותו המקומית נמוכה בהרבה משל שכניו → חריג.
+    Detect behavioral anomalies using Local Outlier Factor (LOF).
 
-    החזרה: רשימת אנומליות במבנה זהה לדיטקטורים שלך.
+    Identifies events with unusual behavioral patterns by comparing
+    local density with neighbors. Effective for unknown attack types.
+
+    Args:
+        df (pd.DataFrame): Log data with timestamp, user_id, action, ip_address
+        contamination (float): Expected anomaly fraction (0.0-0.5, default: 0.01)
+        window_min (int): Time window for features in minutes (default: 30)
+
+    Returns:
+        list[dict]: Anomalies with type, timestamp, user_id, ip_address,
+                   ml_score, reason, mitigation
+
+    Raises:
+        ValueError: If contamination out of range or insufficient data
+        RuntimeError: If ML processing fails
     """
+    # Input validation
+    if not 0.0 <= contamination <= 0.5:
+        raise ValueError(f"Contamination must be between 0.0 and 0.5, got {contamination}")
+
+    if df.empty:
+        return []
+
     anomalies = []
-    feat = _build_simple_features(df, window_min=window_min)
-    X = np.vstack(feat["_ml_vector"].values)
 
-    # LOF: מחזיר -1 לחריגים, 1 לנורמליים. ככל שה-factor נמוך יותר → חריג יותר.
-    lof = LocalOutlierFactor(n_neighbors=20, contamination=contamination, novelty=False, n_jobs=-1)
-    y_pred = lof.fit_predict(X)                        # -1 = חריג
-    scores = -lof.negative_outlier_factor_            # גבוה = חריג
-    # נרמול 0..1 לנוחות קריאה
-    scores_norm = (scores - scores.min()) / (scores.max() - scores.min() + 1e-9)
+    try:
+        # Build behavioral features
+        feat = _build_simple_features(df, window_min=window_min)
+        X = np.vstack(feat["_ml_vector"].values)
 
-    feat["ml_score"] = scores_norm
-    feat["ml_flag"] = (y_pred == -1).astype(int)
+        # Prevent n_neighbors > sample size (critical fix)
+        n_neighbors = min(20, len(X) - 1) if len(X) > 1 else 1
 
-    flagged = feat[feat["ml_flag"] == 1].copy().reset_index(drop=True)
+        if n_neighbors < 1:
+            print("Warning: Not enough samples for LOF analysis")
+            return []
 
-    for _, r in flagged.iterrows():
-        # הסבר קצר וברור “למה סומן” על בסיס הפיצ'רים
-        reason = (
-            f"LOF flagged (fails_win={int(r['fail_count_win'])}, "
-            f"unique_ips_win={int(r['unique_ips_win'])}, "
-            f"is_private={int(r['is_private'])}, hour={int(r['hour'])})"
+        # Apply LOF algorithm
+        lof = LocalOutlierFactor(
+            n_neighbors=n_neighbors,
+            contamination=contamination,
+            novelty=False,
+            n_jobs=-1
         )
-        anomalies.append({
-            "type": "ml_anomaly",
-            "timestamp": r["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
-            "user_id": r["user_id"],
-            "ip_address": r["ip_address"],
-            "ml_score": float(round(r["ml_score"], 4)),
-            "reason": reason
-            # (את ה-mitigations תוסיף אחר כך – לפי הבונוס הבא)
-        })
+
+        y_pred = lof.fit_predict(X)  # -1 = anomaly, 1 = normal
+        scores = -lof.negative_outlier_factor_  # Higher = more anomalous
+
+        # Normalize scores to 0-1 range for interpretability
+        scores_norm = (scores - scores.min()) / (scores.max() - scores.min() + 1e-9)
+
+        # Add ML results to feature data
+        feat["ml_score"] = scores_norm
+        feat["ml_flag"] = (y_pred == -1).astype(int)
+
+        # Extract flagged anomalies
+        flagged = feat[feat["ml_flag"] == 1].copy().reset_index(drop=True)
+
+        # Convert to standardized anomaly format
+        for _, event in flagged.iterrows():
+            reason = _generate_ml_explanation(event)
+
+            anomalies.append({
+                "type": "ml_anomaly",
+                "timestamp": event["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
+                "user_id": event["user_id"],
+                "ip_address": event["ip_address"],
+                "ml_score": float(round(event["ml_score"], 4)),
+                "reason": reason,
+                "mitigation": "review"
+            })
+
+    except Exception as e:
+        raise RuntimeError(f"ML anomaly detection failed: {str(e)}")
 
     return anomalies
 
 
+def _generate_ml_explanation(event: pd.Series) -> str:
+    """Generate human-readable explanation for ML anomaly."""
+    indicators = []
+
+    if event["fail_count_win"] > 2:
+        indicators.append(f"high_failures({int(event['fail_count_win'])})")
+
+    if event["unique_ips_win"] > 1:
+        indicators.append(f"multiple_ips({int(event['unique_ips_win'])})")
+
+    if event["is_private"] == 0:
+        indicators.append("public_ip")
+
+    if event["hour"] < 6 or event["hour"] > 22:
+        indicators.append(f"unusual_hour({int(event['hour'])})")
+
+    if event.get("delta_min_from_prev", 0) < 1:
+        indicators.append("rapid_succession")
+
+    key_factors = ", ".join(indicators) if indicators else "behavioral_pattern"
+    return f"LOF detected anomaly: {key_factors}"
+
+
+def plot_advanced_analytics(anomalies):
+    """
+    Single professional visualization: Hourly threat activity with detection insights.
+    """
+
+
+    if not anomalies:
+        print("⚠️  No anomalies to visualize")
+        return
+
+    # Prepare data
+    df = pd.DataFrame(anomalies)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['hour'] = df['timestamp'].dt.hour
+
+    # Create single visualization
+    plt.figure(figsize=(12, 6))
+
+    # Hourly distribution with professional styling
+    hourly_data = df['hour'].value_counts().sort_index()
+    bars = plt.bar(hourly_data.index, hourly_data.values,
+                   color='#E74C3C', alpha=0.8, edgecolor='black')
+
+    # Enhance visualization
+    plt.title(' Security Threats - Hourly Activity Pattern',
+              fontsize=14, fontweight='bold', pad=15)
+    plt.xlabel('Hour of Day', fontsize=11)
+    plt.ylabel('Number of Threats', fontsize=11)
+
+    # Add business hours shading
+    plt.axvspan(8, 18, alpha=0.1, color='green', zorder=0)
+
+    # Add summary statistics
+    total = len(df)
+    peak_hour = hourly_data.idxmax() if not hourly_data.empty else 12
+    peak_count = hourly_data.max() if not hourly_data.empty else 0
+
+    # Info box
+    plt.text(0.02, 0.98, f'Total Threats: {total}\nPeak Hour: {peak_hour:02d}:00 ({peak_count} threats)',
+             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+
+    # Grid and styling
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    # Save
+    plt.savefig(OUT.parent / "anomaly_analysis.png", dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"📈 Threat analysis complete: {total} threats detected")
+
 
 def main():
     """
-    1. Load log data from CSV
-    2. Run all anomaly detectors
-    3. Merge results into a single list
-    4. Save anomalies into a JSON report
-    5. Print a short summary to console
+    Main execution pipeline for security log analysis.
+
+    Loads data, runs 5 detection algorithms, generates reports and visualizations.
+    Handles errors gracefully and provides detailed progress feedback.
     """
+    try:
+        # Load log data
+        df = load_logs()
+        print(f"📊 Loaded {len(df)} log entries from {DATA}")
 
-    df = load_logs()  #Load logs into DataFrame
+        # Initialize anomaly collection
+        all_anomalies = []
 
-    anomalies = []   #list to collect anomalies
-    anomalies.extend(detect_bruteforce(df))
-    anomalies.extend(detect_suspicious_ips(df))
-    anomalies.extend(detect_geo_hops(df, GEOIP_DB))
-    anomalies.extend(detect_password_spraying(df))
-    # ---- BONUS: ML (LOF) ----
-    if ML_ENABLE:
-        anomalies.extend(detect_ml_lof(df, contamination=ML_CONTAMINATION, window_min=ML_WINDOW_MIN))
+        # Execute rule-based detectors
+        print("🔍 Running rule-based detectors...")
+        all_anomalies.extend(detect_bruteforce(df))
+        all_anomalies.extend(detect_suspicious_ips(df))
+        all_anomalies.extend(detect_geo_hops(df, GEOIP_DB))
+        all_anomalies.extend(detect_password_spraying(df))
 
+        # Execute ML-based detector (if enabled)
+        if ML_ENABLE:
+            print("🤖 Running ML behavioral analysis...")
+            try:
+                ml_anomalies = detect_ml_lof(df, contamination=ML_CONTAMINATION, window_min=ML_WINDOW_MIN)
+                all_anomalies.extend(ml_anomalies)
+                print(f"   Found {len(ml_anomalies)} ML anomalies")
+            except Exception as e:
+                print(f"⚠️  ML detection failed: {str(e)}")
 
-    with open(OUT, "w", encoding="utf-8") as f:
-        json.dump(anomalies, f, indent=2, ensure_ascii=False)
+        # Save results
+        with open(OUT, "w", encoding="utf-8") as f:
+            json.dump(all_anomalies, f, indent=2, ensure_ascii=False)
 
-    print(f"✅ Found {len(anomalies)} anomalies. Saved to {OUT}")
+        print(f"✅ Total anomalies detected: {len(all_anomalies)}")
+        print(f"📁 Results saved to: {OUT}")
 
+        # Generate analytics (if anomalies found)
+        if all_anomalies:
+            print("📊 Generating analytics visualization...")
+            plot_advanced_analytics(all_anomalies)
+            print(f"📈 Visualization saved to: {OUT.parent / 'anomaly_analysis.png'}")
+        else:
+            print("ℹ️  No anomalies detected - skipping visualization")
+
+    except Exception as e:
+        print(f"❌ Error in main execution: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()
