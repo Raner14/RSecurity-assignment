@@ -513,12 +513,10 @@ def _generate_ml_explanation(event: pd.Series) -> str:
 
 def plot_advanced_analytics(anomalies):
     """
-    Single professional visualization: Hourly threat activity with detection insights.
+    Professional visualization: Hourly threat activity with clear time axis.
     """
-
-
     if not anomalies:
-        print("⚠️  No anomalies to visualize")
+        print("  No anomalies to visualize")
         return
 
     # Prepare data
@@ -526,42 +524,64 @@ def plot_advanced_analytics(anomalies):
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df['hour'] = df['timestamp'].dt.hour
 
-    # Create single visualization
-    plt.figure(figsize=(12, 6))
+    # Create hourly counts for all 24 hours (0-23)
+    hourly_counts = df['hour'].value_counts().reindex(range(24), fill_value=0)
 
-    # Hourly distribution with professional styling
-    hourly_data = df['hour'].value_counts().sort_index()
-    bars = plt.bar(hourly_data.index, hourly_data.values,
-                   color='#E74C3C', alpha=0.8, edgecolor='black')
+    # Create visualization with better hour formatting
+    plt.figure(figsize=(14, 7))
+
+    # Color code: business hours (8-17) vs off-hours
+    colors = ['lightcoral' if hour < 8 or hour > 17 else 'lightgreen' for hour in range(24)]
+
+    bars = plt.bar(range(24), hourly_counts.values,
+                   color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
 
     # Enhance visualization
-    plt.title(' Security Threats - Hourly Activity Pattern',
-              fontsize=14, fontweight='bold', pad=15)
-    plt.xlabel('Hour of Day', fontsize=11)
-    plt.ylabel('Number of Threats', fontsize=11)
+    plt.title('Security Threats - Hourly Activity Pattern',
+              fontsize=16, fontweight='bold', pad=20)
+    plt.xlabel('Hour of Day', fontsize=12)
+    plt.ylabel('Number of Threats Detected', fontsize=12)
 
-    # Add business hours shading
-    plt.axvspan(8, 18, alpha=0.1, color='green', zorder=0)
+    # Fix X-axis: clear hour labels
+    plt.xticks(range(24), [f'{h:02d}:00' for h in range(24)], rotation=45, ha='right')
+    plt.xlim(-0.5, 23.5)  # Better bar spacing
 
-    # Add summary statistics
+    # Add business hours legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='lightgreen', alpha=0.7, label='Business Hours (08:00-17:00)'),
+        Patch(facecolor='lightcoral', alpha=0.7, label='Off Hours')
+    ]
+    plt.legend(handles=legend_elements, loc='upper right')
+
+    # Summary statistics
     total = len(df)
-    peak_hour = hourly_data.idxmax() if not hourly_data.empty else 12
-    peak_count = hourly_data.max() if not hourly_data.empty else 0
+    if total > 0:
+        peak_hour = hourly_counts.idxmax()
+        peak_count = hourly_counts.max()
 
-    # Info box
-    plt.text(0.02, 0.98, f'Total Threats: {total}\nPeak Hour: {peak_hour:02d}:00 ({peak_count} threats)',
-             transform=plt.gca().transAxes, fontsize=10, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        # Info box with better positioning
+        info_text = f'Analysis Summary\nTotal Threats: {total}\nPeak Activity: {peak_hour:02d}:00 ({peak_count} threats)'
+        plt.text(0.02, 0.98, info_text,
+                 transform=plt.gca().transAxes, fontsize=11,
+                 verticalalignment='top', fontweight='bold',
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.9))
 
-    # Grid and styling
-    plt.grid(True, alpha=0.3)
+    # Add value labels on top of bars (for bars > 0)
+    for i, count in enumerate(hourly_counts.values):
+        if count > 0:
+            plt.text(i, count + 0.1, str(count), ha='center', va='bottom', fontweight='bold')
+
+    # Professional styling
+    plt.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
 
-    # Save
-    plt.savefig(OUT.parent / "anomaly_analysis.png", dpi=300, bbox_inches='tight')
+    # Save with high quality
+    output_path = OUT.parent / "anomaly_analysis.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
-    print(f" Threat analysis complete: {total} threats detected")
+    print(f"Threat analysis chart saved: {total} threats across 24-hour period")
 
 
 def main():

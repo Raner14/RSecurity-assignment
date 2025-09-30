@@ -6,7 +6,7 @@
 
 ## Assignment Overview
 
-This project analyzes raw activity logs (CSV format) and detects suspicious behaviors that may indicate security incidents. The system implements **5 detection algorithms** covering different attack.
+This project analyzes raw activity logs (CSV format) and detects suspicious behaviors that may indicate security incidents. The system implements **5 detection algorithms** covering different attack vectors.
 
 **Input:** `timestamp, user_id, action, ip_address`  
 **Output:** JSON report with detected anomalies + visualization
@@ -20,7 +20,8 @@ rsecurity-assignment/
 ├── data/
 │   └── sample_logs_no_status.csv    # Input log file (provided)
 ├── geoip/
-│   └── GeoLite2-Country.mmdb        # GeoIP database (download required)
+│   ├── README.md                    # GeoIP database download instructions
+│   └── GeoLite2-Country.mmdb        # GeoIP database (optional)
 ├── outputs/
 │   ├── anomalies.json               # Detection results
 │   └── anomaly_analysis.png         # Hourly threat visualization
@@ -37,7 +38,7 @@ rsecurity-assignment/
 
 ### Step 1: Install Dependencies
 ```bash
-# Create virtual environment (recommended)
+# Create virtual environment (optional but recommended)
 python -m venv venv
 venv\Scripts\activate  # Windows
 
@@ -45,12 +46,12 @@ venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 ```
 
-### Step 2: Download GeoIP Database
-**REQUIRED:** This project needs the MaxMind GeoLite2-Country database for geographic analysis.
+### Step 2: Download GeoIP Database 
+This project uses MaxMind GeoLite2-Country database for geo-hop detection.
 
-1. **Register** (free): [MaxMind GeoLite2](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data)
-2. **Download**: GeoLite2-Country database (Binary .mmdb format)
-3. **Place at**: `geoip/GeoLite2-Country.mmdb`
+**📁 See detailed download instructions:** [`geoip/README.md`](geoip/README.md)
+
+**⚠️ Note:** Without GeoIP database, geo-hop detection will be automatically skipped. All other detectors will work normally.
 
 ### Step 3: Run Analysis
 ```bash
@@ -179,7 +180,6 @@ features = [
 - Applies LOF algorithm to identify outliers (contamination=1%)
 - Provides human-readable explanations for each anomaly
 
-
 **Configuration:**
 ```python
 # ML Configuration in analyze.py
@@ -245,6 +245,26 @@ ML_WINDOW_MIN = 30          # Feature analysis window (minutes)
 - Business hours context (8 AM - 6 PM highlighted) 
 - Key statistics and peak activity analysis
 
+**Business Value:** Helps SOC teams understand threat patterns and optimize resource allocation based on actual attack timing data.
+
+---
+
+## Assignment Requirements Met
+
+✅ **Brute-force detection:** Sliding window algorithm detects repeated failures  
+✅ **Suspicious IPs:** Dual-condition logic reduces false positives  
+✅ **Geo-hops:** MaxMind GeoLite2 database for impossible travel detection  
+✅ **Additional anomaly types:** Password spraying + ML behavioral analysis  
+✅ **JSON report:** Structured output with explanations and mitigation suggestions  
+✅ **README documentation:** Complete setup and technical explanations  
+
+### Features Implemented:
+✅ **visualization:** Executive-ready hourly threat dashboard  
+✅ **Explainable ML:** Human-readable reasoning for ML anomalies  
+✅ **Configurable parameters:** All thresholds adjustable for different environments  
+✅ **Production-ready:** Comprehensive error handling and graceful degradation  
+✅ **Mitigation suggestions:** Actionable recommendations for each threat type  
+
 ---
 
 ## Dependencies
@@ -264,9 +284,10 @@ geoip2>=4.6.0
 
 **GeoIP Database Missing:**
 ```
-Error: [Errno 2] No such file or directory: 'geoip/GeoLite2-Country.mmdb'
+⚠️  GeoIP database not found: geoip\GeoLite2-Country.mmdb
+    Geo-hop detection will be skipped.
 ```
-**Solution:** Download and place GeoIP database as described in Step 2
+**Solution:** This is normal behavior. For geo-hop detection, follow instructions in [`geoip/README.md`](geoip/README.md)
 
 **Module Import Errors:**
 ```
@@ -278,15 +299,11 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
----
-
-## Technical 
-
-- **Efficient algorithms:** sliding window for brute-force detection
-- **Smart filtering:** Reduces false positives with dual-condition logic
-- **Explainable ML:** Human-readable explanations for ML anomalies
-- **Production-ready:** Comprehensive error handling and logging
-- **Configurable:** All parameters adjustable for different environments
+**Permission errors (Windows):**
+- Run as Administrator or check folder permissions
+- Ensure `outputs/` folder is writable
 
 ---
+
+
 
