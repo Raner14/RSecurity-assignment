@@ -197,7 +197,8 @@ def detect_geo_hops(df, geoip_db_path: str | Path = GEOIP_DB):
     anomalies = []
     geoip_db_path = Path(geoip_db_path)
     if not geoip_db_path.exists():
-        raise FileNotFoundError(f"GeoIP DB not found at: {geoip_db_path}")
+        print(f"⚠️ GeoIP DB not found at {geoip_db_path}, skipping geo-hop detection")
+        return []
 
     successes = df[df["action"] == "login_success"].copy()   # only successful logins
     reader = geoip2.database.Reader(str(geoip_db_path))
